@@ -1,0 +1,42 @@
+[project]
+name = "claude-code-dev-starter"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.120.0",
+    "uvicorn[standard]>=0.38.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # Pyflakes (unused variables, imports, etc.)
+    "I",    # isort (import sorting)
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "C4",   # flake8-comprehensions
+    "RUF",  # Ruff-specific rules
+]
+ignore = [
+    "E501",  # Line too long (handled by formatter)
+]
+unfixable = [
+    "F401",  # Unused imports - report but don't auto-remove
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["main"]
+
+[dependency-groups]
+dev = [
+    "pyyaml>=6.0.3",
+    "ruff>=0.14.2",
+    "ty>=0.0.1a24",
+]

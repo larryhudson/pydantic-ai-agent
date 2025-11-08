@@ -1,0 +1,77 @@
+---
+name: Weekly README Check
+
+"on":
+  schedule:
+    # Run every Monday at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:  # Allow manual triggering for testing
+
+permissions:
+  id-token: write  # Required for OIDC token
+  contents: write  # Required to create commits and PRs
+  pull-requests: write  # Required to create PRs
+
+jobs:
+  check-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Get full history to check for changes
+
+      # Check if there were any changes in the last 7 days
+      - name: Check for recent changes
+        id: check_changes
+        run: |
+          # Get commits from the last 7 days
+          RECENT_COMMITS=$(git log --since="7 days ago" --oneline | wc -l)
+          echo "commits=$RECENT_COMMITS" >> $GITHUB_OUTPUT
+
+          if [ "$RECENT_COMMITS" -gt 0 ]; then
+            echo "Found $RECENT_COMMITS commits in the last 7 days"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "No commits in the last 7 days"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Only run Claude if there were changes
+      - name: Run Claude README check
+        if: steps.check_changes.outputs.has_changes == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Please review the README.md file and check if it's up to
+            date with the current state of the repository.
+
+            There have been ${{ steps.check_changes.outputs.commits }}
+            commits in the last 7 days.
+
+            Please:
+            1. Review recent changes to the repository
+               (check git log for the last 7 days)
+            2. Read the current README.md
+            3. Check if the README accurately reflects:
+               - Current features and functionality
+               - Installation instructions
+               - Usage examples
+               - Dependencies
+               - Any other important documentation
+            4. If you find any discrepancies or outdated information,
+               create a PR with the necessary updates
+            5. If everything is up to date, just comment on this
+               action run confirming that
+
+            Focus on factual accuracy and completeness.
+            Be thorough but concise.
+          claude_args: |
+            --max-turns 15
+            --model claude-sonnet-4-20250514
+            --allowedTools Read,Edit,Write,Bash
+
+      - name: No changes detected
+        if: steps.check_changes.outputs.has_changes == 'false'
+        run: |
+          echo "No changes in the last 7 days - skipping README check"
