@@ -43,6 +43,7 @@ class SlackChannelAdapter(
         self.signing_secret = signing_secret
         self._streaming_messages: dict[str, str] = {}  # Track message_id for updates
         self._message_channels: dict[str, str] = {}  # Track message_id -> channel mapping
+        self._conversation_mappings: dict[str, UUID] = {}  # Track thread_id -> conversation_id
 
         self.client = AsyncWebClient(token=bot_token)
 
@@ -96,17 +97,21 @@ class SlackChannelAdapter(
             True if signature is valid, False otherwise
         """
         # Slack includes these headers for signature verification
-        slack_signature = request.get("headers", {}).get("X-Slack-Request-Signature", "")
-        slack_timestamp = request.get("headers", {}).get("X-Slack-Request-Timestamp", "")
+        # Headers may be lowercase when converted to dict
+        headers = request.get("headers", {})
+        slack_signature = headers.get("x-slack-signature", "") or headers.get("X-Slack-Signature", "")
+        slack_timestamp = headers.get("x-slack-request-timestamp", "") or headers.get("X-Slack-Request-Timestamp", "")
 
         # Verify timestamp is not too old (prevent replay attacks)
         try:
             request_time = int(slack_timestamp)
-            if abs(time.time() - request_time) > 300:  # 5 minute window
-                logger.warning("Request timestamp too old, possible replay attack")
+            time_diff = abs(time.time() - request_time)
+            logger.debug(f"  Time diff: {time_diff} seconds")
+            if time_diff > 300:  # 5 minute window
+                logger.warning(f"Request timestamp too old, possible replay attack (diff: {time_diff}s)")
                 return False
-        except (ValueError, TypeError):
-            logger.warning("Invalid timestamp format")
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Invalid timestamp format: {slack_timestamp} - {e}")
             return False
 
         # Reconstruct signing secret
@@ -126,6 +131,14 @@ class SlackChannelAdapter(
                 self.signing_secret.encode(), sig_basestring.encode(), hashlib.sha256
             ).hexdigest()
         )
+
+        # Debug logging
+        logger.debug(f"Slack signature verification:")
+        logger.debug(f"  Timestamp: {slack_timestamp}")
+        logger.debug(f"  Expected: {my_signature}")
+        logger.debug(f"  Received: {slack_signature}")
+        logger.debug(f"  Match: {hmac.compare_digest(my_signature, slack_signature)}")
+        logger.debug(f"  Body length: {len(body)}")
 
         # Compare signatures
         return hmac.compare_digest(my_signature, slack_signature)
@@ -348,6 +361,35 @@ class SlackChannelAdapter(
             )
 
         logger.info(f"Removed reaction :{reaction}: from message {message_id}")
+
+    async def store_conversation_mapping(
+        self,
+        conversation_id: UUID,
+        thread_id: str,
+        metadata: dict,
+    ) -> None:
+        """Store mapping between conversation ID and Slack thread ID.
+
+        Args:
+            conversation_id: Our internal conversation ID
+            thread_id: Slack thread timestamp (ts)
+            metadata: Slack-specific metadata (channel, etc.)
+        """
+        self._conversation_mappings[thread_id] = conversation_id
+        logger.info(f"Stored conversation mapping: {thread_id} -> {conversation_id}")
+
+    async def get_conversation_mapping(self, thread_id: str) -> UUID | None:
+        """Retrieve conversation ID by Slack thread ID.
+
+        Args:
+            thread_id: Slack thread timestamp (ts)
+
+        Returns:
+            Associated conversation ID or None if not found
+        """
+        conversation_id = self._conversation_mappings.get(thread_id)
+        logger.info(f"Retrieved conversation mapping: {thread_id} -> {conversation_id}")
+        return conversation_id
 
     # Helper methods
     def _parse_app_mention(self, event_data: dict) -> ReceivedMessage:
