@@ -4,10 +4,10 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
-from pydantic_ai import Agent
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import create_agent_runner
 from app.database.models import ConversationDB, TaskDB
 from app.models.domain import (
     NotificationConfig,
@@ -96,12 +96,11 @@ class TaskManager:
 
         return self._to_domain(task_db)
 
-    async def execute_task(self, task_id: UUID, agent: Agent | None = None) -> None:
+    async def execute_task(self, task_id: UUID) -> None:
         """Execute a task (called by scheduler or webhook).
 
         Args:
             task_id: Task identifier
-            agent: Optional agent instance (if None, creates default)
         """
         # Get task
         task_db = await self.db.get(TaskDB, task_id)
@@ -119,14 +118,9 @@ class TaskManager:
         await self.db.commit()
 
         try:
-            # Create or use provided agent
-            if agent is None:
-                from app.services.agent_executor import create_default_agent
-
-                agent = create_default_agent()
-
-            # Execute agent
-            agent_executor = AgentExecutor(agent, self.db)
+            # Create runner and executor
+            runner = create_agent_runner()
+            agent_executor = AgentExecutor(runner, self.conversation_manager)
             result = await agent_executor.execute_async(
                 conversation_id=task_db.conversation_id, prompt=task_db.prompt
             )

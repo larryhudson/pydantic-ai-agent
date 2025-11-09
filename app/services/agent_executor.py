@@ -1,12 +1,8 @@
-"""Service for executing Pydantic AI agents."""
+"""Service for executing agents with conversation context."""
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
-
-from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.base import (
     AdapterCapabilities,
@@ -16,30 +12,38 @@ from app.adapters.base import (
     StreamingCapable,
 )
 from app.models.domain import MessageRole
+from app.runners.base import AgentRunner
+from app.runners.models import ExecutionContext, StreamChunk
+from app.runners.models import MessageRole as RunnerMessageRole
 from app.services.conversation_manager import ConversationManager
 
 
 class AgentExecutor:
-    """Executes Pydantic AI agents with conversation context."""
+    """Orchestrates agent execution and conversation persistence.
 
-    def __init__(self, agent: Agent, db: AsyncSession):
-        """Initialize with agent and database session.
+    Responsibilities:
+    - Load conversation history from database
+    - Delegate execution to runner
+    - Save messages back to database
+    - Handle errors and retries
+    """
+
+    def __init__(self, runner: AgentRunner, conversation_manager: ConversationManager):
+        """Initialize with runner and conversation manager.
 
         Args:
-            agent: Pydantic AI agent to execute
-            db: Database session for conversation management
+            runner: AgentRunner instance for agent execution
+            conversation_manager: ConversationManager for persistence
         """
-        self.agent = agent
-        self.db = db
-        self.conversation_manager = ConversationManager(db)
+        self.runner = runner
+        self.conversation_manager = conversation_manager
 
     async def execute_sync(
         self,
         conversation_id: UUID,
         user_message: str,
-        context: dict | None = None,
     ) -> AsyncIterator[str]:
-        """Execute agent synchronously with streaming.
+        """Execute agent with streaming, managing conversation persistence.
 
         This method is used for chatbot and sidekick patterns where
         the user expects an immediate streaming response.
@@ -47,10 +51,9 @@ class AgentExecutor:
         Args:
             conversation_id: Conversation identifier
             user_message: User's input message
-            context: Optional context data for the agent
 
         Yields:
-            Chunks of the agent's response
+            String chunks of the response
         """
         # Add user message to conversation
         await self.conversation_manager.add_message(conversation_id, MessageRole.USER, user_message)
@@ -58,61 +61,75 @@ class AgentExecutor:
         # Load message history for context
         messages = await self.conversation_manager.get_messages(conversation_id)
 
-        # Convert to format expected by agent (if needed)
-        message_history = self._convert_messages_to_agent_format(messages)
+        # Convert to agent runner format
+        history = [self._to_agent_message(msg) for msg in messages]
 
-        # Run agent with streaming
-        # Note: context/deps handling will depend on agent configuration
-        full_response = ""
-        async with self.agent.run_stream(user_message, message_history=message_history) as response:
-            async for chunk in response.stream_text():
-                full_response += chunk
-                yield chunk
+        # Execute with runner
+        response_content = []
+        async with self.runner.session():
+            context = ExecutionContext(conversation_id=conversation_id)
 
-        # Save assistant response to conversation
+            stream = cast(
+                AsyncIterator[StreamChunk],
+                self.runner.execute_streaming(
+                    prompt=user_message,
+                    message_history=history,
+                    context=context,
+                ),
+            )
+            async for chunk in stream:
+                response_content.append(chunk.content)
+                yield chunk.content
+
+        # Save assistant response
         await self.conversation_manager.add_message(
-            conversation_id, MessageRole.ASSISTANT, full_response
+            conversation_id,
+            MessageRole.ASSISTANT,
+            "".join(response_content),
         )
 
     async def execute_async(
         self,
         conversation_id: UUID,
         prompt: str,
-        context: dict | None = None,
     ) -> str:
-        """Execute agent asynchronously, return final result.
+        """Execute agent without streaming, managing conversation persistence.
 
         This method is used for delegation, scheduled, and triggered patterns
         where the execution happens in the background.
 
         Args:
             conversation_id: Conversation identifier
-            prompt: Task prompt/instruction
-            context: Optional context data for the agent
+            prompt: Prompt for the agent
 
         Returns:
             Final agent response
         """
-        # Add prompt as user message
+        # Add user message
         await self.conversation_manager.add_message(conversation_id, MessageRole.USER, prompt)
 
         # Load message history for context
         messages = await self.conversation_manager.get_messages(conversation_id)
 
-        # Convert to format expected by agent
-        message_history = self._convert_messages_to_agent_format(messages)
+        # Convert to agent runner format
+        history = [self._to_agent_message(msg) for msg in messages]
 
-        # Run agent without streaming
-        # Note: context/deps handling will depend on agent configuration
-        result = await self.agent.run(prompt, message_history=message_history)
+        # Execute with runner
+        async with self.runner.session():
+            context = ExecutionContext(conversation_id=conversation_id)
+
+            result = await self.runner.execute_non_streaming(
+                prompt=prompt,
+                message_history=history,
+                context=context,
+            )
 
         # Save assistant response
-        response_text = str(result.data) if hasattr(result, "data") else str(result)
         await self.conversation_manager.add_message(
-            conversation_id, MessageRole.ASSISTANT, response_text
+            conversation_id, MessageRole.ASSISTANT, result.content
         )
 
-        return response_text
+        return result.content
 
     async def execute_with_channel_context(
         self,
@@ -139,8 +156,8 @@ class AgentExecutor:
         """
         caps = adapter.capabilities
 
-        # Note: Channel-aware system prompt can be built here and set on agent
-        # during initialization. For now, agent uses its default system prompt.
+        # Note: Channel-aware system prompt can be built here using
+        # _build_system_prompt_for_channel and passed via ExecutionContext
 
         # Add user message to conversation
         await self.conversation_manager.add_message(conversation_id, MessageRole.USER, user_message)
@@ -148,58 +165,68 @@ class AgentExecutor:
         # Get conversation history
         messages = await self.conversation_manager.get_messages(conversation_id)
 
-        # Convert to agent format
-        message_history = self._convert_messages_to_agent_format(messages)
+        # Convert to agent runner format
+        history = [self._to_agent_message(msg) for msg in messages]
 
         # Execute agent
         full_response = ""
+        async with self.runner.session():
+            context = ExecutionContext(
+                conversation_id=conversation_id,
+                system_prompt=self._build_system_prompt_for_channel(caps),
+            )
 
-        if caps.supports_streaming and isinstance(adapter, StreamingCapable):
-            # Handle streaming response
-            message_id = None
+            if (
+                caps.supports_streaming
+                and self.runner.capabilities.supports_streaming
+                and isinstance(adapter, StreamingCapable)
+            ):
+                # Handle streaming response
+                message_id = None
 
-            # Add acknowledgment reaction if supported
-            if isinstance(adapter, ReactionCapable):
-                # Note: We'll get the message_id after first send
-                pass
-
-            async with self.agent.run_stream(
-                user_message,
-                message_history=message_history,
-            ) as response:
-                async for chunk in response.stream_text():
-                    full_response += chunk
+                stream = cast(
+                    AsyncIterator[StreamChunk],
+                    self.runner.execute_streaming(
+                        prompt=user_message,
+                        message_history=history,
+                        context=context,
+                    ),
+                )
+                async for chunk in stream:
+                    full_response += chunk.content
 
                     # Send first chunk to establish message
                     if message_id is None:
                         message_id = await adapter.send_message(
-                            chunk,
+                            chunk.content,
                             conversation_id,
                             thread_id=thread_id,
                             metadata=adapter_metadata,
                         )
                     else:
                         # Stream subsequent chunks
-                        await adapter.stream_message_chunk(chunk, conversation_id, message_id)
+                        await adapter.stream_message_chunk(
+                            chunk.content, conversation_id, message_id
+                        )
 
-            # Mark complete
-            if isinstance(adapter, ReactionCapable) and message_id:
-                await adapter.add_reaction(message_id, "white_check_mark")
-        else:
-            # Handle complete message (no streaming)
-            # Note: system_prompt should be set on the agent during initialization
-            result = await self.agent.run(
-                user_message,
-                message_history=message_history,
-            )
-            full_response = str(result.data) if hasattr(result, "data") else str(result)
+                # Mark complete
+                if isinstance(adapter, ReactionCapable) and message_id:
+                    await adapter.add_reaction(message_id, "white_check_mark")
+            else:
+                # Handle complete message (no streaming)
+                result = await self.runner.execute_non_streaming(
+                    prompt=user_message,
+                    message_history=history,
+                    context=context,
+                )
+                full_response = result.content
 
-            await adapter.send_message(
-                full_response,
-                conversation_id,
-                thread_id=thread_id,
-                metadata=adapter_metadata,
-            )
+                await adapter.send_message(
+                    full_response,
+                    conversation_id,
+                    thread_id=thread_id,
+                    metadata=adapter_metadata,
+                )
 
         # Save assistant response to conversation
         await self.conversation_manager.add_message(
@@ -253,36 +280,19 @@ class AgentExecutor:
 
         return base_prompt
 
-    def _convert_messages_to_agent_format(self, messages: list[Any]) -> list[ModelMessage]:
-        """Convert conversation messages to Pydantic AI message format.
+    def _to_agent_message(self, db_message: Any) -> Any:
+        """Convert database message to AgentMessage.
 
         Args:
-            messages: Conversation messages
+            db_message: Message from database
 
         Returns:
-            List of messages in agent format
+            AgentMessage for runner
         """
-        # For now, return empty list - in a real implementation,
-        # you would convert messages to the format expected by Pydantic AI
-        # This depends on the specific agent configuration
-        return []
+        from app.runners.models import AgentMessage
 
-
-def create_default_agent(model: str = "openai:gpt-4") -> Agent:
-    """Create a default agent with basic configuration.
-
-    Args:
-        model: Model identifier (e.g., "openai:gpt-4", "anthropic:claude-3-opus")
-
-    Returns:
-        Configured Pydantic AI agent
-    """
-    agent = Agent(
-        model=model,
-        system_prompt=(
-            "You are a helpful AI assistant. Provide clear, concise, "
-            "and accurate responses to user queries."
-        ),
-    )
-
-    return agent
+        return AgentMessage(
+            role=RunnerMessageRole(db_message.role),
+            content=db_message.content,
+            metadata=db_message.metadata or {},
+        )
