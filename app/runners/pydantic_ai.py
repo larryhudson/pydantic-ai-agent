@@ -35,9 +35,16 @@ class PydanticAIRunner(AgentRunner):
 
     @property
     def capabilities(self) -> RunnerCapabilities:
+        # Check for tools - try both old and new attribute names
+        has_tools = False
+        if hasattr(self.agent, "_function_toolset"):
+            has_tools = bool(self.agent._function_toolset)
+        elif hasattr(self.agent, "_function_tools"):
+            has_tools = bool(self.agent._function_tools)
+
         return RunnerCapabilities(
             supports_streaming=True,
-            supports_tool_use=len(self.agent._function_tools) > 0,
+            supports_tool_use=has_tools,
             supports_vision=False,  # Depends on model
             supports_system_prompt_override=True,
             context_window=None,  # Model-dependent
@@ -100,10 +107,20 @@ class PydanticAIRunner(AgentRunner):
             **run_params,
         )
 
+        # Convert token usage to dict if available
+        token_usage = None
+        if hasattr(result, "usage"):
+            usage = result.usage()
+            if usage:
+                token_usage = {
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                }
+
         return ExecutionResult(
-            content=str(result.data),
+            content=str(result.output),
             finish_reason="complete",
-            token_usage=result.usage() if hasattr(result, "usage") else None,
+            token_usage=token_usage,
             metadata={"raw_result": result},
         )
 
