@@ -9,6 +9,9 @@ from app.database.models import ConversationChannelAdapterDB
 from app.models.domain import ConversationChannelAdapter, MessageRole
 from app.services.conversation_manager import ConversationManager
 
+# Global adapter registry
+_global_adapters: dict[str, ChannelAdapter] = {}
+
 
 class SecurityError(Exception):
     """Raised when request signature verification fails."""
@@ -19,8 +22,10 @@ class SecurityError(Exception):
 class ChannelAdapterManager:
     """Manages channel adapter registration and message routing."""
 
-    def __init__(self):
-        self._adapters: dict[str, ChannelAdapter] = {}
+    def __init__(self, db_session: AsyncSession | None = None):
+        self.db_session = db_session
+        # Use global adapters registry
+        self._adapters = _global_adapters
 
     async def register_adapter(self, name: str, adapter: ChannelAdapter) -> None:
         """Register a new channel adapter.
@@ -150,7 +155,7 @@ class ChannelAdapterManager:
             message=message,
             conversation_id=conversation_id,
             thread_id=mapping.thread_id,
-            metadata=mapping.metadata,
+            metadata=mapping.adapter_metadata,
         )
 
     async def _store_conversation_mapping(
@@ -234,6 +239,6 @@ class ChannelAdapterManager:
             conversation_id=db_mapping.conversation_id,
             adapter_name=db_mapping.adapter_name,
             thread_id=db_mapping.thread_id,
-            metadata=db_mapping.metadata,
+            adapter_metadata=db_mapping.adapter_metadata,
             created_at=db_mapping.created_at,
         )

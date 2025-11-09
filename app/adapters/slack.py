@@ -6,6 +6,8 @@ import logging
 import time
 from uuid import UUID
 
+from slack_sdk.web.async_client import AsyncWebClient
+
 from app.adapters.base import (
     AdapterCapabilities,
     ChannelAdapter,
@@ -40,10 +42,9 @@ class SlackChannelAdapter(
         self.bot_token = bot_token
         self.signing_secret = signing_secret
         self._streaming_messages: dict[str, str] = {}  # Track message_id for updates
+        self._message_channels: dict[str, str] = {}  # Track message_id -> channel mapping
 
-        # Note: In a real implementation, you would initialize the Slack client here
-        # from slack_sdk.web.async_client import AsyncWebClient
-        # self.client = AsyncWebClient(token=bot_token)
+        self.client = AsyncWebClient(token=bot_token)
 
     @property
     def capabilities(self) -> AdapterCapabilities:
@@ -150,17 +151,19 @@ class SlackChannelAdapter(
         if not metadata:
             raise ValueError("Slack metadata required (channel, ts, etc.)")
 
-        # In a real implementation:
-        # response = await self.client.chat_postMessage(
-        #     channel=metadata["channel"],
-        #     text=message,
-        #     thread_ts=thread_id or metadata.get("ts"),
-        # )
-        # return response["ts"]
+        channel = metadata["channel"]
+        response = await self.client.chat_postMessage(
+            channel=channel,
+            text=message,
+            thread_ts=thread_id or metadata.get("ts"),
+        )
 
-        # For now, return a mock message ID
-        logger.info(f"Would send to Slack: {message}")
-        return f"mock_ts_{int(time.time())}"
+        message_ts = response["ts"]
+        # Track channel for this message for future updates
+        self._message_channels[message_ts] = channel
+
+        logger.info(f"Sent message to Slack: {message_ts}")
+        return message_ts
 
     async def stream_message_chunk(
         self,
@@ -181,12 +184,13 @@ class SlackChannelAdapter(
         else:
             self._streaming_messages[message_id] += chunk
 
-        # In a real implementation:
-        # await self.client.chat_update(
-        #     channel=self._get_channel_for_message(message_id),
-        #     ts=message_id,
-        #     text=self._streaming_messages[message_id],
-        # )
+        channel = self._get_channel_for_message(message_id)
+        if channel:
+            await self.client.chat_update(
+                channel=channel,
+                ts=message_id,
+                text=self._streaming_messages[message_id],
+            )
 
         logger.info(f"Streaming chunk to Slack: {chunk[:50]}...")
 
@@ -212,18 +216,20 @@ class SlackChannelAdapter(
             raise ValueError("Slack metadata required")
 
         blocks = self._convert_to_blocks(content)
+        channel = metadata["channel"]
 
-        # In a real implementation:
-        # response = await self.client.chat_postMessage(
-        #     channel=metadata["channel"],
-        #     text=content.fallback_text,
-        #     blocks=blocks,
-        #     thread_ts=thread_id,
-        # )
-        # return response["ts"]
+        response = await self.client.chat_postMessage(
+            channel=channel,
+            text=content.fallback_text,
+            blocks=blocks,
+            thread_ts=thread_id or metadata.get("ts"),
+        )
 
-        logger.info(f"Would send rich message to Slack with {len(blocks)} blocks")
-        return f"mock_ts_{int(time.time())}"
+        message_ts = response["ts"]
+        self._message_channels[message_ts] = channel
+
+        logger.info(f"Sent rich message to Slack with {len(blocks)} blocks")
+        return message_ts
 
     async def send_interactive_message(
         self,
@@ -246,35 +252,38 @@ class SlackChannelAdapter(
         if not metadata:
             raise ValueError("Slack metadata required")
 
-        # In a real implementation:
-        # blocks = [
-        #     {
-        #         "type": "section",
-        #         "text": {"type": "mrkdwn", "text": content.text},
-        #     },
-        #     {
-        #         "type": "actions",
-        #         "elements": [
-        #             {
-        #                 "type": "button",
-        #                 "text": {"type": "plain_text", "text": btn.get("label", "")},
-        #                 "action_id": btn.get("action_id", ""),
-        #                 "value": btn.get("value", ""),
-        #             }
-        #             for btn in content.buttons
-        #         ],
-        #     },
-        # ]
-        # response = await self.client.chat_postMessage(
-        #     channel=metadata["channel"],
-        #     text=content.text,
-        #     blocks=blocks,
-        #     thread_ts=thread_id,
-        # )
-        # return response["ts"]
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": content.text},
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": btn.get("label", "")},
+                        "action_id": btn.get("action_id", ""),
+                        "value": btn.get("value", ""),
+                    }
+                    for btn in content.buttons
+                ],
+            },
+        ]
+        channel = metadata["channel"]
 
-        logger.info(f"Would send interactive message to Slack with {len(content.buttons)} buttons")
-        return f"mock_ts_{int(time.time())}"
+        response = await self.client.chat_postMessage(
+            channel=channel,
+            text=content.text,
+            blocks=blocks,
+            thread_ts=thread_id or metadata.get("ts"),
+        )
+
+        message_ts = response["ts"]
+        self._message_channels[message_ts] = channel
+
+        logger.info(f"Sent interactive message to Slack with {len(content.buttons)} buttons")
+        return message_ts
 
     async def handle_interaction(self, interaction_event: dict) -> InteractionResponse:
         """Handle button clicks, menu selections, etc.
@@ -309,14 +318,15 @@ class SlackChannelAdapter(
             message_id: Slack message timestamp
             reaction: Emoji name (without colons)
         """
-        # In a real implementation:
-        # await self.client.reactions_add(
-        #     channel=self._get_channel_for_message(message_id),
-        #     timestamp=message_id,
-        #     name=reaction,
-        # )
+        channel = self._get_channel_for_message(message_id)
+        if channel:
+            await self.client.reactions_add(
+                channel=channel,
+                timestamp=message_id,
+                name=reaction,
+            )
 
-        logger.info(f"Would add reaction :{reaction}: to message {message_id}")
+        logger.info(f"Added reaction :{reaction}: to message {message_id}")
 
     async def remove_reaction(
         self,
@@ -329,14 +339,15 @@ class SlackChannelAdapter(
             message_id: Slack message timestamp
             reaction: Emoji name (without colons)
         """
-        # In a real implementation:
-        # await self.client.reactions_remove(
-        #     channel=self._get_channel_for_message(message_id),
-        #     timestamp=message_id,
-        #     name=reaction,
-        # )
+        channel = self._get_channel_for_message(message_id)
+        if channel:
+            await self.client.reactions_remove(
+                channel=channel,
+                timestamp=message_id,
+                name=reaction,
+            )
 
-        logger.info(f"Would remove reaction :{reaction}: from message {message_id}")
+        logger.info(f"Removed reaction :{reaction}: from message {message_id}")
 
     # Helper methods
     def _parse_app_mention(self, event_data: dict) -> ReceivedMessage:
@@ -393,5 +404,4 @@ class SlackChannelAdapter(
 
     def _get_channel_for_message(self, message_id: str) -> str | None:
         """Get channel ID for a message (used when updating)."""
-        # In a real implementation, maintain a mapping of message_id -> channel
-        return None
+        return self._message_channels.get(message_id)
