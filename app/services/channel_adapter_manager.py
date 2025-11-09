@@ -85,7 +85,9 @@ class ChannelAdapterManager:
         # Note: request signature verification is done at the endpoint level
         logger.info(f"Parsing message from adapter {adapter_name}")
         message = await adapter.receive_message(event_data)
-        logger.info(f"Parsed message: content={message.content[:50]}, thread_id={message.thread_id}, metadata={message.metadata}")
+        logger.info(
+            f"Parsed message: content={message.content[:50]}, thread_id={message.thread_id}, metadata={message.metadata}"
+        )
 
         # 3. Look up or create conversation
         conversation_id = await self._get_conversation_mapping(
@@ -178,7 +180,9 @@ class ChannelAdapterManager:
             metadata: Channel-specific metadata
             db_session: Database session
         """
-        logger.info(f"Storing adapter mapping: adapter={adapter_name}, thread_id={thread_id}, metadata={metadata}")
+        logger.info(
+            f"Storing adapter mapping: adapter={adapter_name}, thread_id={thread_id}, metadata={metadata}"
+        )
         db_mapping = ConversationChannelAdapterDB(
             conversation_id=conversation_id,
             adapter_name=adapter_name,
