@@ -97,7 +97,6 @@ class ChannelAdapterManager:
                     "adapter_name": adapter_name,
                     "initial_thread_id": message.thread_id,
                 },
-                db_session=db_session,
             )
             conversation_id = conversation.id
 
@@ -115,7 +114,6 @@ class ChannelAdapterManager:
             conversation_id=conversation_id,
             role=MessageRole.USER,
             content=message.content,
-            db_session=db_session,
             adapter_name=adapter_name,
             adapter_message_id=message.thread_id,
         )
