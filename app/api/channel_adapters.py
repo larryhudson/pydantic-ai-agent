@@ -6,12 +6,13 @@ from typing import cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.base import InteractiveCapable
+from app.adapters.base import InteractiveCapable, ReactionCapable
 from app.adapters.email import EmailChannelAdapter
 from app.config import get_settings
 from app.database import get_db
 from app.services.channel_adapter_manager import ChannelAdapterManager, SecurityError
 from app.services.conversation_manager import ConversationManager
+from app.workers.task_worker import enqueue_conversation_processing
 
 logger = logging.getLogger(__name__)
 
@@ -137,24 +138,50 @@ async def slack_events(
     raw_body = await request.body()
     headers = dict(request.headers)
 
+    # Log headers for debugging
+    logger.debug(f"Slack request headers: {list(headers.keys())}")
+    logger.debug(f"Timestamp header value: {headers.get('x-slack-request-timestamp', 'NOT FOUND')}")
+
     request_data = {"headers": headers, "body": raw_body.decode("utf-8")}
 
     # Verify Slack request signature
     is_valid = await adapter.verify_request(request_data)
+    logger.debug(f"Slack signature verification result: {is_valid}")
     if not is_valid:
         raise HTTPException(status_code=401, detail="Invalid Slack signature")
+
+    logger.info(f"Slack event verified and accepted")
 
     # Handle the incoming event
     try:
         conversation_manager = ConversationManager(db)
+        logger.info(f"Event body: {body}")
         conversation_id, thread_id = await manager.handle_incoming_event(
             "slack", body, conversation_manager, db
         )
+        await db.commit()
+        logger.info(f"Slack event processed: conversation_id={conversation_id}, thread_id={thread_id}")
+
+        # Add reaction to acknowledge the request
+        try:
+            reaction_adapter = cast(ReactionCapable, adapter)
+            if hasattr(reaction_adapter, "add_reaction"):
+                await reaction_adapter.add_reaction(thread_id, "hourglass")
+                logger.info(f"Added hourglass reaction to message {thread_id}")
+        except Exception as e:
+            logger.warning(f"Failed to add reaction: {e}")
+
+        # Queue conversation for background processing
+        await enqueue_conversation_processing(conversation_id)
+        logger.info(f"Queued conversation {conversation_id} for processing")
+
         return {"ok": True, "conversation_id": str(conversation_id), "thread_id": thread_id}
-    except SecurityError as e:
-        raise HTTPException(status_code=401, detail=str(e)) from e
     except ValueError as e:
+        logger.error(f"ValueError handling Slack event: {e}")
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.error(f"Unexpected error handling Slack event: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error processing Slack event") from e
 
 
 @router.post("/slack/interactions")
