@@ -67,7 +67,9 @@ class ConversationDB(Base):
     messages: Mapped[list["MessageDB"]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"
     )
-    task: Mapped["TaskDB | None"] = relationship(back_populates="conversation")
+    task: Mapped["TaskDB | None"] = relationship(
+        back_populates="conversation", foreign_keys="TaskDB.conversation_id"
+    )
 
 
 class MessageDB(Base):
@@ -153,7 +155,9 @@ class TaskDB(Base):
     )
 
     # Relationships
-    conversation: Mapped[ConversationDB] = relationship(back_populates="task")
+    conversation: Mapped[ConversationDB] = relationship(
+        back_populates="task", foreign_keys="TaskDB.conversation_id"
+    )
 
 
 class ConversationChannelAdapterDB(Base):
