@@ -13,29 +13,7 @@ help:
 	@echo "  make lint-file   - Lint and format a single file (usage: make lint-file FILE=path/to/file)"
 
 dev:
-	@if [ -f $(PIDFILE) ] && kill -0 $$(cat $(PIDFILE)) 2>/dev/null; then \
-		echo "Dev server is already running (PID: $$(cat $(PIDFILE)))"; \
-		exit 1; \
-	fi
-	@echo $$ > $(PIDFILE)
-	@echo "Starting development server with hivemind..."
-	@hivemind Procfile > $(DEV_LOG) 2>&1 & \
-	echo $$! >> $(PIDFILE)
-	@echo "Dev server started. View logs with 'make dev-logs'"
-
-dev-logs:
-	@if [ -f $(DEV_LOG) ]; then \
-		tail -n 50 $(DEV_LOG) | sed 's/\x1b\[[0-9;]*m//g'; \
-	else \
-		echo "Dev log file not found. Start dev server with 'make dev'"; \
-	fi
-	@echo ""
-	@echo "Dev server status: " ; \
-	if [ -f $(PIDFILE) ] && kill -0 $$(cat $(PIDFILE)) 2>/dev/null; then \
-		echo "  running"; \
-	else \
-		echo "  stopped"; \
-	fi
+	@hivemind Procfile
 
 lint:
 	@echo "Linting Python files with ruff..."
@@ -60,13 +38,3 @@ lint-file:
 	@echo "Linting and formatting: $(FILE)"
 	@uv run ruff check --fix $(FILE)
 	@uv run ruff format $(FILE)
-
-.PHONY: stop-dev
-stop-dev:
-	@if [ -f $(PIDFILE) ]; then \
-		kill $$(cat $(PIDFILE)) 2>/dev/null || true; \
-		rm -f $(PIDFILE); \
-		echo "Dev server stopped"; \
-	else \
-		echo "No dev server running"; \
-	fi
