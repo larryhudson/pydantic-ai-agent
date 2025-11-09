@@ -1,5 +1,6 @@
 """Manager for channel adapters and message routing."""
 
+import logging
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,8 @@ from app.adapters.base import ChannelAdapter
 from app.database.models import ConversationChannelAdapterDB
 from app.models.domain import ConversationChannelAdapter, MessageRole
 from app.services.conversation_manager import ConversationManager
+
+logger = logging.getLogger(__name__)
 
 # Global adapter registry
 _global_adapters: dict[str, ChannelAdapter] = {}
@@ -75,26 +78,24 @@ class ChannelAdapterManager:
 
         Returns:
             Tuple of (conversation_id, thread_id)
-
-        Raises:
-            SecurityError: If request signature verification fails
         """
         adapter = self.get_adapter(adapter_name)
 
-        # 1. Verify request authenticity
-        if not await adapter.verify_request(event_data):
-            raise SecurityError(f"Invalid request signature for {adapter_name}")
-
-        # 2. Parse message via adapter
+        # Parse message via adapter
+        # Note: request signature verification is done at the endpoint level
+        logger.info(f"Parsing message from adapter {adapter_name}")
         message = await adapter.receive_message(event_data)
+        logger.info(f"Parsed message: content={message.content[:50]}, thread_id={message.thread_id}, metadata={message.metadata}")
 
         # 3. Look up or create conversation
         conversation_id = await self._get_conversation_mapping(
             adapter_name, message.thread_id, db_session
         )
+        logger.info(f"Conversation mapping lookup result: {conversation_id}")
 
         if conversation_id is None:
             # Create new conversation
+            logger.info(f"Creating new conversation for {adapter_name}")
             conversation = await conversation_manager.create_conversation(
                 user_id=message.sender_id,
                 pattern_type="channel_adapter",
@@ -104,8 +105,10 @@ class ChannelAdapterManager:
                 },
             )
             conversation_id = conversation.id
+            logger.info(f"Created conversation {conversation_id}")
 
             # Store adapter mapping
+            logger.info(f"Storing mapping with metadata: {message.metadata}")
             await self._store_conversation_mapping(
                 conversation_id=conversation_id,
                 adapter_name=adapter_name,
@@ -175,14 +178,17 @@ class ChannelAdapterManager:
             metadata: Channel-specific metadata
             db_session: Database session
         """
+        logger.info(f"Storing adapter mapping: adapter={adapter_name}, thread_id={thread_id}, metadata={metadata}")
         db_mapping = ConversationChannelAdapterDB(
             conversation_id=conversation_id,
             adapter_name=adapter_name,
             thread_id=thread_id,
-            metadata=metadata,
+            adapter_metadata=metadata,
         )
+        logger.info(f"Created db_mapping with metadata: {db_mapping.adapter_metadata}")
         db_session.add(db_mapping)
         await db_session.flush()
+        logger.info(f"After flush, db_mapping.adapter_metadata: {db_mapping.adapter_metadata}")
 
     async def _get_conversation_mapping(
         self, adapter_name: str, thread_id: str, db_session: AsyncSession
@@ -242,3 +248,42 @@ class ChannelAdapterManager:
             adapter_metadata=db_mapping.adapter_metadata,
             created_at=db_mapping.created_at,
         )
+
+
+async def initialize_adapters() -> None:
+    """Initialize and register all configured channel adapters.
+
+    This function instantiates adapters based on environment configuration
+    and registers them globally. It should be called during application startup
+    and can be called again in worker processes.
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    manager = ChannelAdapterManager()
+
+    # Initialize Slack adapter if configured
+    if settings.slack_bot_token and settings.slack_signing_secret:
+        from app.adapters.slack import SlackChannelAdapter
+
+        slack_adapter = SlackChannelAdapter(
+            bot_token=settings.slack_bot_token,
+            signing_secret=settings.slack_signing_secret,
+        )
+        await manager.register_adapter("slack", slack_adapter)
+        logger.info("Slack adapter initialized")
+    else:
+        logger.debug("Slack adapter not configured (missing credentials)")
+
+    # Initialize Email adapter if configured
+    if settings.mailgun_api_key and settings.mailgun_domain:
+        from app.adapters.email import EmailChannelAdapter
+
+        email_adapter = EmailChannelAdapter(
+            mailgun_api_key=settings.mailgun_api_key,
+            mailgun_domain=settings.mailgun_domain,
+        )
+        await manager.register_adapter("email", email_adapter)
+        logger.info("Email adapter (Mailgun) initialized")
+    else:
+        logger.debug("Email adapter not configured (missing credentials)")

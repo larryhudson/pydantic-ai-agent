@@ -6,15 +6,19 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.adapters.slack import SlackChannelAdapter
-from app.api.channel_adapters import initialize_email_adapter
 from app.api.channel_adapters import router as channel_adapters_router
 from app.api.conversations import router as conversations_router
 from app.api.tasks import router as tasks_router
 from app.config import get_settings
 from app.database import close_db, init_db
-from app.services.channel_adapter_manager import ChannelAdapterManager
+from app.services.channel_adapter_manager import initialize_adapters
 from app.workers.scheduler import load_scheduled_tasks, start_scheduler, stop_scheduler
+
+# Configure logging to show DEBUG level logs
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -30,20 +34,8 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
-    # Register Slack adapter if credentials are configured
-    if settings.slack_bot_token and settings.slack_signing_secret:
-        slack_adapter = SlackChannelAdapter(
-            bot_token=settings.slack_bot_token,
-            signing_secret=settings.slack_signing_secret,
-        )
-        manager = ChannelAdapterManager()
-        await manager.register_adapter("slack", slack_adapter)
-        logger.info("Slack adapter registered")
-    else:
-        logger.warning("Slack credentials not configured, Slack adapter not registered")
-
-    # Initialize email adapter
-    await initialize_email_adapter()
+    # Initialize all configured adapters
+    await initialize_adapters()
     logger.info("Channel adapters initialized")
 
     # Start scheduler
