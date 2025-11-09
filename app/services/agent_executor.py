@@ -96,7 +96,8 @@ class AgentExecutor:
         """Execute agent without streaming, managing conversation persistence.
 
         This method is used for delegation, scheduled, and triggered patterns
-        where the execution happens in the background.
+        where the execution happens in the background. It adds a new user message,
+        executes the agent, and saves the response.
 
         Args:
             conversation_id: Conversation identifier
@@ -120,6 +121,58 @@ class AgentExecutor:
 
             result = await self.runner.execute_non_streaming(
                 prompt=prompt,
+                message_history=history,
+                context=context,
+            )
+
+        # Save assistant response
+        await self.conversation_manager.add_message(
+            conversation_id, MessageRole.ASSISTANT, result.content
+        )
+
+        return result.content
+
+    async def execute_on_existing_conversation(
+        self,
+        conversation_id: UUID,
+    ) -> str:
+        """Execute agent on an existing conversation with already-persisted messages.
+
+        This method is used when processing messages that have already been added
+        to the conversation (e.g., by channel adapters). It executes the agent
+        using existing message history and saves only the assistant response.
+
+        Args:
+            conversation_id: Conversation identifier
+
+        Returns:
+            Final agent response
+        """
+        # Load existing message history
+        messages = await self.conversation_manager.get_messages(conversation_id)
+
+        if not messages:
+            raise ValueError(f"No messages found in conversation {conversation_id}")
+
+        # Get the last user message as the prompt
+        user_message = None
+        for msg in reversed(messages):
+            if msg.role == MessageRole.USER:
+                user_message = msg.content
+                break
+
+        if not user_message:
+            raise ValueError(f"No user message found in conversation {conversation_id}")
+
+        # Convert to agent runner format
+        history = [self._to_agent_message(msg) for msg in messages]
+
+        # Execute with runner
+        async with self.runner.session():
+            context = ExecutionContext(conversation_id=conversation_id)
+
+            result = await self.runner.execute_non_streaming(
+                prompt=user_message,
                 message_history=history,
                 context=context,
             )
@@ -294,5 +347,5 @@ class AgentExecutor:
         return AgentMessage(
             role=RunnerMessageRole(db_message.role),
             content=db_message.content,
-            metadata=db_message.metadata or {},
+            tool_calls=getattr(db_message, "tool_calls", None),
         )
