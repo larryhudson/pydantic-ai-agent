@@ -171,7 +171,7 @@ class ConversationChannelAdapterDB(Base):
     thread_id: Mapped[str] = mapped_column(
         String(500), nullable=False
     )  # Adapter's thread/conversation ID
-    metadata: Mapped[dict] = mapped_column(
+    adapter_metadata: Mapped[dict] = mapped_column(
         JSON, nullable=False, default=dict
     )  # Channel-specific data
     created_at: Mapped[datetime] = mapped_column(

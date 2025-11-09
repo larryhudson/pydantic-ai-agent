@@ -1,10 +1,12 @@
 """API endpoints for channel adapters (webhooks, etc.)."""
 
 import logging
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.adapters.base import InteractiveCapable
 from app.adapters.email import EmailChannelAdapter
 from app.config import get_settings
 from app.database import get_db
@@ -101,3 +103,130 @@ async def email_webhook(
         # Return 200 to acknowledge receipt and prevent Mailgun retries
         # The error is logged for investigation
         return {"status": "error", "message": str(e)}
+
+
+@router.post("/slack/events")
+async def slack_events(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle incoming Slack events (app_mention, message, etc.).
+
+    Args:
+        request: Raw HTTP request from Slack
+        db: Database session
+
+    Returns:
+        Slack API response
+    """
+    # Parse request body
+    body = await request.json()
+
+    # Handle Slack URL verification challenge
+    if body.get("type") == "url_verification":
+        return {"challenge": body.get("challenge")}
+
+    # Get the Slack adapter
+    manager = ChannelAdapterManager(db)
+    try:
+        adapter = manager.get_adapter("slack")
+    except KeyError:
+        raise HTTPException(status_code=500, detail="Slack adapter not configured") from None
+
+    # Get raw request data for signature verification
+    raw_body = await request.body()
+    headers = dict(request.headers)
+
+    request_data = {"headers": headers, "body": raw_body.decode("utf-8")}
+
+    # Verify Slack request signature
+    is_valid = await adapter.verify_request(request_data)
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Invalid Slack signature")
+
+    # Handle the incoming event
+    try:
+        conversation_manager = ConversationManager(db)
+        conversation_id, thread_id = await manager.handle_incoming_event(
+            "slack", body, conversation_manager, db
+        )
+        return {"ok": True, "conversation_id": str(conversation_id), "thread_id": thread_id}
+    except SecurityError as e:
+        raise HTTPException(status_code=401, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/slack/interactions")
+async def slack_interactions(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle Slack interactive events (button clicks, menu selections, etc.).
+
+    Args:
+        request: Raw HTTP request from Slack
+        db: Database session
+
+    Returns:
+        Slack API response
+    """
+    import json
+
+    # Parse form data
+    form = await request.form()
+    payload_str = form.get("payload", "{}")
+
+    # Handle case where payload might be UploadFile
+    if isinstance(payload_str, str):
+        payload_str_decoded = payload_str
+    else:
+        payload_str_decoded = await payload_str.read()
+        payload_str_decoded = payload_str_decoded.decode("utf-8")
+
+    # Parse JSON payload
+    try:
+        payload = json.loads(payload_str_decoded)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail="Invalid JSON in payload") from e
+
+    # Get the Slack adapter
+    manager = ChannelAdapterManager(db)
+    try:
+        adapter = manager.get_adapter("slack")
+    except KeyError:
+        raise HTTPException(status_code=500, detail="Slack adapter not configured") from None
+
+    # Get raw request data for signature verification
+    raw_body = await request.body()
+    headers = dict(request.headers)
+
+    request_data = {"headers": headers, "body": raw_body.decode("utf-8")}
+
+    # Verify Slack request signature
+    is_valid = await adapter.verify_request(request_data)
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Invalid Slack signature")
+
+    # Handle interaction
+    try:
+        # Check if adapter supports interactions
+        if not hasattr(adapter, "handle_interaction"):
+            raise HTTPException(status_code=400, detail="Adapter does not support interactions")
+
+        interactive_adapter = cast(InteractiveCapable, adapter)
+        interaction_response = await interactive_adapter.handle_interaction(payload)
+
+        # Store conversation mapping if needed
+        trigger_id = payload.get("trigger_id", "")
+        await manager._store_conversation_mapping(
+            conversation_id=interaction_response.conversation_id,
+            adapter_name="slack",
+            thread_id=trigger_id,
+            metadata=payload,
+            db_session=db,
+        )
+
+        return {"ok": True, "action_id": interaction_response.action_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e

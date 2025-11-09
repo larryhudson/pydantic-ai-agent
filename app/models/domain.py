@@ -183,5 +183,5 @@ class ConversationChannelAdapter(BaseModel):
     conversation_id: UUID
     adapter_name: str  # "slack", "email", "github"
     thread_id: str  # Adapter's thread/conversation ID
-    metadata: dict = Field(default_factory=dict, description="Channel-specific data")
+    adapter_metadata: dict = Field(default_factory=dict, description="Channel-specific data")
     created_at: datetime = Field(default_factory=utc_now)

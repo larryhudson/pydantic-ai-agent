@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     mailgun_domain: str | None = None
     mailgun_from_email: str = "noreply@aiagent.platform"
 
-    # Notifications
+    # Slack Adapter
+    slack_bot_token: str | None = None
+    slack_signing_secret: str | None = None
     slack_webhook_url: str | None = None
 
     # Background Jobs
