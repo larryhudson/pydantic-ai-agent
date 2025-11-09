@@ -1,12 +1,9 @@
 """Service for sending notifications via various channels."""
 
 import logging
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Any
 
 import aiohttp
-from aiosmtplib import SMTP
 
 from app.config import get_settings
 from app.models.domain import NotificationChannel, NotificationConfig, Task
@@ -102,38 +99,52 @@ Please continue the conversation at: /conversations/{task.conversation_id}
                 logger.error(f"Failed to send notification via {channel}: {e}", exc_info=True)
 
     async def send_email(self, to: str, subject: str, body: str) -> None:
-        """Send email notification.
+        """Send email notification via Mailgun.
+
+        TODO: Refactor to use EmailChannelAdapter instead of duplicating
+        email sending logic. This method should delegate to the channel adapter.
 
         Args:
             to: Recipient email address
             subject: Email subject
             body: Email body (plain text)
-        """
-        msg = MIMEMultipart()
-        msg["From"] = settings.smtp_from_email
-        msg["To"] = to
-        msg["Subject"] = subject
 
-        msg.attach(MIMEText(body, "plain"))
+        Raises:
+            RuntimeError: If Mailgun not configured or email sending fails
+        """
+        if not settings.mailgun_api_key or not settings.mailgun_domain:
+            logger.error("Mailgun not configured - cannot send email notification")
+            raise RuntimeError("Email service not configured")
+
+        email_data = {
+            "from": settings.mailgun_from_email,
+            "to": to,
+            "subject": subject,
+            "text": body,
+        }
 
         try:
-            smtp = SMTP(
-                hostname=settings.smtp_host,
-                port=settings.smtp_port,
-                use_tls=True,
-            )
-            await smtp.connect()
+            mailgun_url = f"https://api.mailgun.net/v3/{settings.mailgun_domain}/messages"
+            auth = aiohttp.BasicAuth("api", settings.mailgun_api_key)
 
-            if settings.smtp_username and settings.smtp_password:
-                await smtp.login(settings.smtp_username, settings.smtp_password)
-
-            await smtp.send_message(msg)
-            await smtp.quit()
-
-            logger.info(f"Email sent to {to}")
-        except Exception as e:
-            logger.error(f"Failed to send email to {to}: {e}", exc_info=True)
-            raise
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    mailgun_url,
+                    data=email_data,
+                    auth=auth,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Email notification sent to {to}")
+                    else:
+                        error_text = await response.text()
+                        logger.error(
+                            f"Failed to send email via Mailgun: {response.status} {error_text}"
+                        )
+                        raise RuntimeError(f"Mailgun API error: {response.status}")
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error sending email to {to}: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to send email: {e}") from e
 
     async def send_slack(self, webhook_url: str, title: str, message: str) -> None:
         """Send Slack notification via webhook.
