@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import create_agent_runner
 from app.database import get_db
 from app.models.domain import (
     ConversationThread,
@@ -13,7 +14,7 @@ from app.models.domain import (
     Message,
     SendMessageRequest,
 )
-from app.services.agent_executor import AgentExecutor, create_default_agent
+from app.services.agent_executor import AgentExecutor
 from app.services.conversation_manager import ConversationManager
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -118,9 +119,9 @@ async def send_message(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Create agent and executor
-    agent = create_default_agent()
-    executor = AgentExecutor(agent, db)
+    # Create runner and executor
+    runner = create_agent_runner()
+    executor = AgentExecutor(runner, manager)
 
     if request.stream:
         # Streaming response
@@ -129,7 +130,6 @@ async def send_message(
             async for chunk in executor.execute_sync(
                 conversation_id=conversation_id,
                 user_message=request.message,
-                context=conversation.context_data,
             ):
                 yield chunk
 
@@ -140,7 +140,6 @@ async def send_message(
         async for chunk in executor.execute_sync(
             conversation_id=conversation_id,
             user_message=request.message,
-            context=conversation.context_data,
         ):
             response_text += chunk
 
