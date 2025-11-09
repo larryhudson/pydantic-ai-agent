@@ -173,3 +173,15 @@ class UpdateTaskRequest(BaseModel):
     schedule_expression: str | None = None
     is_active: bool | None = None
     notification_config: NotificationConfig | None = None
+
+
+# Channel Adapter Models
+class ConversationChannelAdapter(BaseModel):
+    """Tracks which channel adapters a conversation is active in."""
+
+    id: UUID = Field(default_factory=uuid4)
+    conversation_id: UUID
+    adapter_name: str  # "slack", "email", "github"
+    thread_id: str  # Adapter's thread/conversation ID
+    metadata: dict = Field(default_factory=dict, description="Channel-specific data")
+    created_at: datetime = Field(default_factory=utc_now)

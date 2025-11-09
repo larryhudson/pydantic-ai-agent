@@ -14,12 +14,16 @@ from app.models.domain import ConversationThread, Message, MessageRole
 class ConversationManager:
     """Manages conversation threads and message history."""
 
-    def __init__(self, db: AsyncSession):
-        """Initialize with database session."""
+    def __init__(self, db: AsyncSession | None = None):
+        """Initialize with optional database session."""
         self.db = db
 
     async def create_conversation(
-        self, user_id: str, pattern_type: str, context_data: dict | None = None
+        self,
+        user_id: str,
+        pattern_type: str,
+        context_data: dict | None = None,
+        db_session: AsyncSession | None = None,
     ) -> ConversationThread:
         """Create a new conversation thread.
 
@@ -27,19 +31,24 @@ class ConversationManager:
             user_id: User identifier
             pattern_type: Type of interaction pattern
             context_data: Optional context data for the conversation
+            db_session: Optional database session (uses self.db if not provided)
 
         Returns:
             Created conversation thread
         """
+        db = db_session or self.db
+        if not db:
+            raise ValueError("Database session required")
+
         conversation_db = ConversationDB(
             user_id=user_id,
             pattern_type=pattern_type,
             context_data=context_data or {},
         )
 
-        self.db.add(conversation_db)
-        await self.db.commit()
-        await self.db.refresh(conversation_db)
+        db.add(conversation_db)
+        await db.commit()
+        await db.refresh(conversation_db)
 
         return self._to_domain(conversation_db)
 
@@ -50,6 +59,9 @@ class ConversationManager:
         content: str,
         tool_calls: list[dict] | None = None,
         tool_results: list[dict] | None = None,
+        adapter_name: str | None = None,
+        adapter_message_id: str | None = None,
+        db_session: AsyncSession | None = None,
     ) -> Message:
         """Add a message to a conversation.
 
@@ -59,27 +71,36 @@ class ConversationManager:
             content: Message content
             tool_calls: Optional tool calls made
             tool_results: Optional tool results
+            adapter_name: Optional name of adapter message came from
+            adapter_message_id: Optional adapter's message ID
+            db_session: Optional database session (uses self.db if not provided)
 
         Returns:
             Created message
         """
+        db = db_session or self.db
+        if not db:
+            raise ValueError("Database session required")
+
         message_db = MessageDB(
             conversation_id=conversation_id,
             role=role,
             content=content,
             tool_calls=tool_calls,
             tool_results=tool_results,
+            adapter_name=adapter_name,
+            adapter_message_id=adapter_message_id,
         )
 
-        self.db.add(message_db)
+        db.add(message_db)
 
         # Update conversation's updated_at timestamp
-        conversation_db = await self.db.get(ConversationDB, conversation_id)
+        conversation_db = await db.get(ConversationDB, conversation_id)
         if conversation_db:
             conversation_db.updated_at = datetime.now(UTC)
 
-        await self.db.commit()
-        await self.db.refresh(message_db)
+        await db.commit()
+        await db.refresh(message_db)
 
         return self._message_to_domain(message_db)
 
