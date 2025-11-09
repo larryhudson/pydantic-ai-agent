@@ -139,13 +139,11 @@ class AgentExecutor:
         """
         caps = adapter.capabilities
 
-        # Build channel-aware system prompt
-        system_prompt = self._build_system_prompt_for_channel(caps)
+        # Note: Channel-aware system prompt can be built here and set on agent
+        # during initialization. For now, agent uses its default system prompt.
 
         # Add user message to conversation
-        await self.conversation_manager.add_message(
-            conversation_id, MessageRole.USER, user_message, db_session=self.db
-        )
+        await self.conversation_manager.add_message(conversation_id, MessageRole.USER, user_message)
 
         # Get conversation history
         messages = await self.conversation_manager.get_messages(conversation_id)
@@ -168,7 +166,6 @@ class AgentExecutor:
             async with self.agent.run_stream(
                 user_message,
                 message_history=message_history,
-                system_prompt=system_prompt,
             ) as response:
                 async for chunk in response.stream_text():
                     full_response += chunk
@@ -190,10 +187,10 @@ class AgentExecutor:
                 await adapter.add_reaction(message_id, "white_check_mark")
         else:
             # Handle complete message (no streaming)
+            # Note: system_prompt should be set on the agent during initialization
             result = await self.agent.run(
                 user_message,
                 message_history=message_history,
-                system_prompt=system_prompt,
             )
             full_response = str(result.data) if hasattr(result, "data") else str(result)
 
@@ -206,7 +203,7 @@ class AgentExecutor:
 
         # Save assistant response to conversation
         await self.conversation_manager.add_message(
-            conversation_id, MessageRole.ASSISTANT, full_response, db_session=self.db
+            conversation_id, MessageRole.ASSISTANT, full_response
         )
 
         return full_response

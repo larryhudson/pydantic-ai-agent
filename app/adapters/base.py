@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from enum import Enum
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from app.adapters.models import (
@@ -136,7 +137,8 @@ class ChannelAdapter(ABC):
         pass
 
 
-class StreamingCapable:
+@runtime_checkable
+class StreamingCapable(Protocol):
     """Adapters that support real-time message updates."""
 
     async def stream_message_chunk(
@@ -155,7 +157,8 @@ class StreamingCapable:
         ...
 
 
-class RichFormattingCapable:
+@runtime_checkable
+class RichFormattingCapable(Protocol):
     """Adapters that support structured/rich content beyond plain text."""
 
     async def send_rich_message(
@@ -179,7 +182,8 @@ class RichFormattingCapable:
         ...
 
 
-class InteractiveCapable:
+@runtime_checkable
+class InteractiveCapable(Protocol):
     """Adapters that support buttons, forms, menus, etc."""
 
     async def send_interactive_message(
@@ -214,7 +218,8 @@ class InteractiveCapable:
         ...
 
 
-class ReactionCapable:
+@runtime_checkable
+class ReactionCapable(Protocol):
     """Adapters that support reactions/emoji responses."""
 
     async def add_reaction(
