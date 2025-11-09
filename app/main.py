@@ -6,6 +6,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.channel_adapters import (
+    initialize_email_adapter,
+)
+from app.api.channel_adapters import (
+    router as channel_adapters_router,
+)
 from app.api.conversations import router as conversations_router
 from app.api.tasks import router as tasks_router
 from app.config import get_settings
@@ -33,6 +39,10 @@ async def lifespan(app: FastAPI):
     # Load scheduled tasks
     await load_scheduled_tasks()
     logger.info("Scheduled tasks loaded")
+
+    # Initialize channel adapters
+    await initialize_email_adapter()
+    logger.info("Channel adapters initialized")
 
     yield
 
@@ -65,6 +75,7 @@ app.add_middleware(
 )
 
 # Include API routers
+app.include_router(channel_adapters_router)
 app.include_router(conversations_router)
 app.include_router(tasks_router)
 

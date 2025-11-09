@@ -28,12 +28,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     default_model: str = "openai:gpt-4"
 
-    # Email (SMTP)
-    smtp_host: str = "localhost"
-    smtp_port: int = 587
-    smtp_username: str | None = None
-    smtp_password: str | None = None
-    smtp_from_email: str = "noreply@aiagent.platform"
+    # Email (Mailgun)
+    mailgun_api_key: str | None = None
+    mailgun_domain: str | None = None
+    mailgun_from_email: str = "noreply@aiagent.platform"
 
     # Notifications
     slack_webhook_url: str | None = None
